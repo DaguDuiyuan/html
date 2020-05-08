@@ -5,25 +5,31 @@ library tokenizer_test;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:mirrors';
-import 'package:path/path.dart' as pathos;
-import 'package:test/test.dart';
+
 import 'package:html/src/token.dart';
 import 'package:html/src/tokenizer.dart';
+import 'package:path/path.dart' as pathos;
+import 'package:test/test.dart';
+
 import 'support.dart';
 
 class TokenizerTestParser {
-  String _state;
-  String _lastStartTag;
+  final String _state;
+  final String _lastStartTag;
+  final bool _generateSpans;
   List outputTokens;
 
-  TokenizerTestParser(String initialState, [String lastStartTag])
+  TokenizerTestParser(String initialState,
+      [String lastStartTag, bool generateSpans = false])
       : _state = initialState,
-        _lastStartTag = lastStartTag;
+        _lastStartTag = lastStartTag,
+        _generateSpans = generateSpans;
 
   List parse(String str) {
     // Note: we need to pass bytes to the tokenizer if we want it to handle BOM.
     var bytes = utf8.encode(str);
-    var tokenizer = HtmlTokenizer(bytes, encoding: 'utf-8');
+    var tokenizer =
+        HtmlTokenizer(bytes, encoding: 'utf-8', generateSpans: _generateSpans);
     outputTokens = [];
 
     // Note: we can't get a closure of the state method. However, we can
@@ -66,20 +72,21 @@ class TokenizerTestParser {
   }
 
   void processDoctype(DoctypeToken token) {
-    outputTokens.add(
-        ["DOCTYPE", token.name, token.publicId, token.systemId, token.correct]);
+    addOutputToken(token,
+        ['DOCTYPE', token.name, token.publicId, token.systemId, token.correct]);
   }
 
   void processStartTag(StartTagToken token) {
-    outputTokens.add(["StartTag", token.name, token.data, token.selfClosing]);
+    addOutputToken(
+        token, ['StartTag', token.name, token.data, token.selfClosing]);
   }
 
   void processEndTag(EndTagToken token) {
-    outputTokens.add(["EndTag", token.name, token.selfClosing]);
+    addOutputToken(token, ['EndTag', token.name, token.selfClosing]);
   }
 
   void processComment(StringToken token) {
-    outputTokens.add(["Comment", token.data]);
+    addOutputToken(token, ['Comment', token.data]);
   }
 
   void processSpaceCharacters(StringToken token) {
@@ -87,7 +94,7 @@ class TokenizerTestParser {
   }
 
   void processCharacters(StringToken token) {
-    outputTokens.add(["Character", token.data]);
+    addOutputToken(token, ['Character', token.data]);
   }
 
   void processEOF(token) {}
@@ -96,17 +103,25 @@ class TokenizerTestParser {
     // TODO(jmesserly): when debugging test failures it can be useful to add
     // logging here like `print('ParseError $token');`. It would be nice to
     // use the actual logging library.
-    outputTokens.add(["ParseError", token.data]);
+    addOutputToken(token, ['ParseError', token.data]);
+  }
+
+  void addOutputToken(Token token, List array) {
+    outputTokens.add([
+      ...array,
+      if (token.span != null && _generateSpans) token.span.start.offset,
+      if (token.span != null && _generateSpans) token.span.end.offset,
+    ]);
   }
 }
 
 List concatenateCharacterTokens(List tokens) {
   var outputTokens = [];
   for (var token in tokens) {
-    if (token.indexOf("ParseError") == -1 && token[0] == "Character") {
+    if (token.indexOf('ParseError') == -1 && token[0] == 'Character') {
       if (outputTokens.isNotEmpty &&
-          outputTokens.last.indexOf("ParseError") == -1 &&
-          outputTokens.last[0] == "Character") {
+          outputTokens.last.indexOf('ParseError') == -1 &&
+          outputTokens.last[0] == 'Character') {
         outputTokens.last[1] = '${outputTokens.last[1]}${token[1]}';
       } else {
         outputTokens.add(token);
@@ -120,7 +135,7 @@ List concatenateCharacterTokens(List tokens) {
 
 List normalizeTokens(List tokens) {
   // TODO: convert tests to reflect arrays
-  for (int i = 0; i < tokens.length; i++) {
+  for (var i = 0; i < tokens.length; i++) {
     var token = tokens[i];
     if (token[0] == 'ParseError') {
       tokens[i] = token[0];
@@ -136,18 +151,20 @@ List normalizeTokens(List tokens) {
 void expectTokensMatch(
     List expectedTokens, List receivedTokens, bool ignoreErrorOrder,
     [bool ignoreErrors = false, String message]) {
-  var checkSelfClosing = false;
+  // If the 'selfClosing' attribute is not included in the expected test tokens,
+  // remove it from the received token.
+  var removeSelfClosing = false;
   for (var token in expectedTokens) {
-    if (token[0] == "StartTag" && token.length == 4 ||
-        token[0] == "EndTag" && token.length == 3) {
-      checkSelfClosing = true;
+    if (token[0] == 'StartTag' && token.length == 3 ||
+        token[0] == 'EndTag' && token.length == 2) {
+      removeSelfClosing = true;
       break;
     }
   }
 
-  if (!checkSelfClosing) {
+  if (removeSelfClosing) {
     for (var token in receivedTokens) {
-      if (token[0] == "StartTag" || token[0] == "EndTag") {
+      if (token[0] == 'StartTag' || token[0] == 'EndTag') {
         token.removeLast();
       }
     }
@@ -157,13 +174,13 @@ void expectTokensMatch(
     expect(receivedTokens, equals(expectedTokens), reason: message);
   } else {
     // Sort the tokens into two groups; non-parse errors and parse errors
-    var expectedNonErrors = expectedTokens.where((t) => t != "ParseError");
-    var receivedNonErrors = receivedTokens.where((t) => t != "ParseError");
+    var expectedNonErrors = expectedTokens.where((t) => t != 'ParseError');
+    var receivedNonErrors = receivedTokens.where((t) => t != 'ParseError');
 
     expect(receivedNonErrors, equals(expectedNonErrors), reason: message);
     if (!ignoreErrors) {
-      var expectedParseErrors = expectedTokens.where((t) => t == "ParseError");
-      var receivedParseErrors = receivedTokens.where((t) => t == "ParseError");
+      var expectedParseErrors = expectedTokens.where((t) => t == 'ParseError');
+      var receivedParseErrors = receivedTokens.where((t) => t == 'ParseError');
       expect(receivedParseErrors, equals(expectedParseErrors), reason: message);
     }
   }
@@ -180,23 +197,22 @@ void runTokenizerTest(Map testInfo) {
   if (!testInfo.containsKey('lastStartTag')) {
     testInfo['lastStartTag'] = null;
   }
-  var parser =
-      TokenizerTestParser(testInfo['initialState'], testInfo['lastStartTag']);
+  var parser = TokenizerTestParser(testInfo['initialState'],
+      testInfo['lastStartTag'], testInfo['generateSpans'] ?? false);
   var tokens = parser.parse(testInfo['input']);
   tokens = concatenateCharacterTokens(tokens);
   var received = normalizeTokens(tokens);
   var errorMsg = [
-    "\n\nInitial state:",
+    '\n\nInitial state:',
     testInfo['initialState'],
-    "\nInput:",
+    '\nInput:',
     testInfo['input'],
-    "\nExpected:",
+    '\nExpected:',
     expected,
-    "\nreceived:",
+    '\nreceived:',
     tokens
   ].map((s) => '$s').join('\n');
-  var ignoreErrorOrder = testInfo['ignoreErrorOrder'];
-  if (ignoreErrorOrder == null) ignoreErrorOrder = false;
+  var ignoreErrorOrder = testInfo['ignoreErrorOrder'] ?? false;
 
   expectTokensMatch(expected, received, ignoreErrorOrder, true, errorMsg);
 }
@@ -205,11 +221,11 @@ Map unescape(Map testInfo) {
   // TODO(sigmundch,jmesserly): we currently use jsonDecode to unescape the
   // unicode characters in the string, we should use a decoding that works with
   // any control characters.
-  decode(inp) => inp == '\u0000' ? inp : jsonDecode('"$inp"');
+  dynamic decode(inp) => inp == '\u0000' ? inp : jsonDecode('"$inp"');
 
-  testInfo["input"] = decode(testInfo["input"]);
-  for (var token in testInfo["output"]) {
-    if (token == "ParseError") {
+  testInfo['input'] = decode(testInfo['input']);
+  for (var token in testInfo['output']) {
+    if (token == 'ParseError') {
       continue;
     } else {
       token[1] = decode(token[1]);
@@ -229,7 +245,7 @@ Map unescape(Map testInfo) {
 String camelCase(String s) {
   s = s.toLowerCase();
   var result = StringBuffer();
-  for (var match in RegExp(r"\W+(\w)(\w+)").allMatches(s)) {
+  for (var match in RegExp(r'\W+(\w)(\w+)').allMatches(s)) {
     if (result.length == 0) result.write(s.substring(0, match.start));
     result.write(match.group(1).toUpperCase());
     result.write(match.group(2));
@@ -248,13 +264,13 @@ void main() {
     if (testList == null) continue;
 
     group(testName, () {
-      for (int index = 0; index < testList.length; index++) {
+      for (var index = 0; index < testList.length; index++) {
         final testInfo = testList[index];
 
-        testInfo.putIfAbsent("initialStates", () => ["Data state"]);
-        for (var initialState in testInfo["initialStates"]) {
-          test(testInfo["description"], () {
-            testInfo["initialState"] = camelCase(initialState);
+        testInfo.putIfAbsent('initialStates', () => ['Data state']);
+        for (var initialState in testInfo['initialStates']) {
+          test(testInfo['description'], () {
+            testInfo['initialState'] = camelCase(initialState);
             runTokenizerTest(testInfo);
           });
         }
